@@ -14,8 +14,9 @@ class Logic:
         self.outputDir_ = outputDir
         self.refactorDir = os.path.join(self.outputDir_, str(int(round(time.time() * 1000))))
         self.flag_ = "姓名"  # 必须要有的字段, 没有则不记录该条数据
-        self.unionHeaders_ = []  # 所有格式的header并集, 整理文件统一格式用
-        self.dictData_ = {}  # 存放所有人员信息
+        self.idFlag_ = "身份"
+        self.unionHeaders_ = ["数据来源"]  # 所有格式的header并集, 整理文件统一格式用
+        self.dictFilter = {}  # 存放所有人员信息
         self.refactorLimit_ = 100000
         self.refactorFileMaxRow_ = self.refactorLimit_  # 重构文件最大的行数
         self.refactorFileRow_ = 1  # 重构文件行数
@@ -57,11 +58,11 @@ class Logic:
                         # 每条记录中必须要有姓名的字段, 否在无法去重
                         if self.flag_ in record.keys():
                             flag = record[self.flag_]
-                            if flag in self.dictData_.keys():
-                                self.dictData_[flag].append(record)
+                            if flag in self.dictFilter.keys():
+                                self.dictFilter[flag].append(record)
                             else:
                                 listData = [record]
-                                self.dictData_[flag] = listData
+                                self.dictFilter[flag] = listData
 
             except Exception as e:
                 logger.error(str(e))
@@ -72,18 +73,18 @@ class Logic:
         # 读取重构文件并筛重
         self.filterData()
 
-        # 去重重构文件
-        self.dropDuplicates()
+        # # 去重重构文件
+        # self.dropDuplicates()
 
     def dropDuplicates(self):
         for path, newPath in self.dictRefactorFiles_.items():
             data = pandas.read_excel(path)
             data = data.drop_duplicates(subset=["姓名", "身份证"], keep="first")
-            print(data)
             data.to_excel(newPath, encoding="utf-8", index=True)
 
     def filterData(self):
         dictFilter = {}
+        dictRepeat = {}
         for p in os.listdir(self.refactorDir):
             fileName, extName = os.path.splitext(p)
             if "重构文件" in fileName and extName == ".xlsx":
@@ -96,16 +97,61 @@ class Logic:
                     listHeaders = reader.getSheetHeader(sheet)
 
                     while True:
-                        data = reader.getOneRecord(listHeaders)
-                        if len(data) == 0:
+                        record = reader.getOneRecord(listHeaders)
+                        if len(record) == 0:
                             break
 
-                        flag = data[self.flag_]
+                        flag = record[self.flag_]
 
                         if flag in dictFilter.keys():
-                            dictFilter[flag].append(data)
+                            listData = dictFilter[flag]
+                            isRepeat = False
+                            for oldRecord in listData:
+                                recordId = ""
+
+                                for key in record.keys():
+                                    if self.idFlag_ in key:
+                                        recordId = record[key]
+                                        break
+                                for key in oldRecord.keys():
+                                    if self.idFlag_ in key:
+                                        oldId = oldRecord[key]
+                                        break
+                                # 判断是否都有身份证的列, 如果有身份证, 并且数据不为None, 则按姓名, 身份证去重
+                                if recordId != "None" and oldId != "None":
+                                    if recordId == oldId:
+                                        # 相同数据
+                                        isRepeat = True
+                                        break
+                                    else:
+                                        # 不重复
+                                        break
+
+                                # 如果没有身份证信息, 则按除姓名外, 任意三列一样去重
+                                repeatCount = 0
+                                for header in self.unionHeaders_:
+                                    try:
+                                        if record[header] != "None" and oldRecord[header] != "None":
+                                            if record[header] == oldRecord[header]:
+                                                repeatCount += 1
+                                                if repeatCount >= 3:
+                                                    isRepeat = True
+                                                    break
+                                    except Exception as e:
+                                        logger.error(str(e))
+
+                                if isRepeat:
+                                    break
+
+                            if not isRepeat:
+                                dictFilter[flag].append(record)
+                            else:
+                                if flag in dictRepeat.keys():
+                                    dictRepeat[flag].append(record)
+                                else:
+                                    dictRepeat[flag] = [record]
                         else:
-                            listData = [data]
+                            listData = [record]
                             dictFilter[flag] = listData
 
         limit = 100000
@@ -125,25 +171,8 @@ class Logic:
         repeatWriter.writeHeader()
 
         for name, listData in dictFilter.items():
-            if len(listData) > 1:
-                # 把重复的数据单独输出到一个文件中
-                for data in listData:
-                    repeatWriter.writeData(data)
-                    repeatDataRow += 1
-                    if repeatDataRow > repeatMaxRow:
-                        outFile = os.path.join(self.outputDir_,
-                                               "重复数据_{}_{}.xlsx".format(repeatDataStartRow, repeatDataRow - 1))
-                        repeatWriter.save(outFile)
-                        logger.info("保存重复文件:{}".format(outFile))
-                        repeatDataStartRow = repeatDataRow
-
-                        repeatMaxRow += limit
-                        repeatWriter = XlsxWriter(outFile, self.unionHeaders_)
-                        repeatWriter.writeHeader()
-                # 只保留一条数据, 并写入到不重复的数据中
-
-            else:
-                writer.writeData(listData[0])
+            for record in listData:
+                writer.writeData(record)
                 dataRow += 1
                 if dataRow > dataMaxRow:
                     outFile = os.path.join(self.outputDir_,
@@ -155,6 +184,22 @@ class Logic:
                     dataMaxRow += limit
                     writer = XlsxWriter(outFile, self.unionHeaders_)
                     writer.writeHeader()
+
+        for name, listData in dictRepeat.items():
+            # 把重复的数据单独输出到一个文件中
+            for record in listData:
+                repeatWriter.writeData(record)
+                repeatDataRow += 1
+                if repeatDataRow > repeatMaxRow:
+                    outFile = os.path.join(self.outputDir_,
+                                           "重复数据_{}_{}.xlsx".format(repeatDataStartRow, repeatDataRow - 1))
+                    repeatWriter.save(outFile)
+                    logger.info("保存重复文件:{}".format(outFile))
+                    repeatDataStartRow = repeatDataRow
+
+                    repeatMaxRow += limit
+                    repeatWriter = XlsxWriter(outFile, self.unionHeaders_)
+                    repeatWriter.writeHeader()
 
         outFile = os.path.join(self.refactorDir,
                                "不重复数据_{}_{}.xlsx".format(dataStartRow, dataRow - 1))
@@ -173,7 +218,7 @@ class Logic:
         writer = XlsxWriter(self.unionHeaders_)
         writer.writeHeader()
 
-        for name, listData in self.dictData_.items():
+        for name, listData in self.dictFilter.items():
             for data in listData:
 
                 # 没有标志位
