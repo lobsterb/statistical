@@ -4,35 +4,31 @@ import sqlite3
 from loguru import logger
 from configdef import configDictSqlTables
 
+
 class SqliteManager:
     def __init__(self, dbName):
         self.dbName_ = dbName
         self.conn_ = sqlite3.connect(dbName)
-        self.init()
+        self.initDb()
 
     def __del__(self):
         self.conn_.close()
 
     # 初始化
-    def init(self):
+    def initDb(self):
         logger.info("初始化数据库")
-        listTables = self.select("sqlite_master", ["tbl_name"], "type='table'")
+        listResult = self.select("sqlite_master", ["tbl_name"], "type='table'")
+        listTables = []
+        for row in listResult:
+            listTables.append(row["tbl_name"])
 
-        if len(listTables) == 0:
-            # 空数据库, 创建所有表
-            for tblName, sql in configDictSqlTables.items():
+        for tblName, sql in configDictSqlTables.items():
+            if tblName not in listTables:
                 logger.info("创建表:{}", tblName)
                 self.execute(sql)
-        else:
-            # 如果表不存在, 则创建表
-            for row in listTables:
-                tblName = row["tbl_name"]
-                logger.info("检测表:{}", tblName)
-
-        print(listTables)
 
     # 查询
-    def select(self, tableName, selectColumn, where = ""):
+    def select(self, tableName, selectColumn, where=""):
         listResult = []
         try:
             sql = "select "
@@ -44,7 +40,8 @@ class SqliteManager:
             sql += " from '" + tableName + "'"
             if where != "":
                 sql += " where " + where
-            cursor = self.conn_.execute(sql)
+            cursor = self.conn_.cursor()
+            cursor = cursor.execute(sql)
             for row in cursor:
                 dictData = {}
                 for i in range(0, colLength):
@@ -60,9 +57,10 @@ class SqliteManager:
     # 执行
     def execute(self, sql):
         try:
-            self.conn_.execute(sql)
+            cursor = self.conn_.cursor()
+            cursor.execute(sql)
+            self.conn_.commit()
         except Exception as e:
             logger.error(str(e))
             return False
         return True
-

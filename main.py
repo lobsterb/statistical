@@ -3,9 +3,18 @@
 import os
 import shutil
 import sys
+import configparser
 
 from logic import Logic
 from loguru import logger
+
+from configdef import configFuzzyMatching
+from configdef import configRule
+
+
+def notEmpty(s):
+    return s and s.strip()
+
 
 if __name__ == '__main__':
     os.system("chcp 65001")
@@ -23,6 +32,56 @@ if __name__ == '__main__':
         logger.warning("检测到out目录,删除上次结果")
         shutil.rmtree(outDir)
         os.makedirs(outDir)
+
+    # 读取配置文件
+    configPath = os.path.join(curDir, "settings.ini")
+    if not os.path.exists(configPath):
+        logger.error("当前目录下没有settings.ini配置文件,无法继续执行")
+        os.system("pause")
+        sys.exit(0)
+
+    field = ""
+    certainty = ""
+    unCertainty = ""
+    unCertaintyCount = ""
+    try:
+        conf = configparser.ConfigParser()
+        conf.read(configPath, encoding="utf8")
+        secs = conf.sections()
+        # FuzzyMatching, Rule
+        # 获取模糊替换规则
+        items = conf.items("FuzzyMatching")
+        for item in items:
+            configFuzzyMatching[item[0]] = item[1]
+
+        field = conf.get("Rule", "Field", fallback="")
+        certainty = conf.get("Rule", "Certainty", fallback="")
+        unCertainty = conf.get("Rule", "UnCertainty", fallback="")
+        unCertaintyCount = conf.get("Rule", "UnCertaintyCount", fallback=0)
+
+        if field == "" or certainty == "" or unCertainty == "" or \
+                unCertaintyCount == 0:
+            raise Exception("匹配规则中,Field, Certainty, UnCertainty, UnCertaintyCount必要字段有空值")
+
+    except Exception as e:
+        logger.error("配置文件settings.ini内容格式错误:{}", str(e))
+        os.system("pause")
+        sys.exit(0)
+
+    configRule["Field"] = field
+
+    configRule["Certainty"] = certainty
+
+    newList = unCertainty.split(",")
+    for item in newList:
+        configRule["UnCertainty"].add(item.strip())
+    configRule["UnCertaintyCount"] = unCertaintyCount
+
+    logger.info("当前脚本规则:")
+    logger.info("属性必要字段:{}", configRule["Field"])
+    logger.info("确定性匹配规则:{}", configRule["Certainty"])
+    logger.info("不确定性匹配规则:{}", configRule["UnCertainty"])
+    logger.info("不确定性匹配规则包含数量:{}", configRule["UnCertaintyCount"])
 
     logic = Logic(srcDir, outDir)
     logic.start()

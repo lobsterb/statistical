@@ -1,23 +1,165 @@
 # coding:utf-8
 
+import os
+import sys
+
 from loguru import logger
 from util.SqliteManager import SqliteManager
-from util.xlsxreader import XlsxReader
-from util.xlsxwriter import XlsxWriter
+from util.CompareFile import CompareFile
+
+from configdef import configDictSql
+from configdef import configFuzzyMatching
+from configdef import configRule
+
 
 class Logic:
     def __init__(self, srcDir, outDir):
-        self.srcDir_ = srcDir                               # 比对文件目录
-        self.outDir_ = outDir                               # 输出目录
-        self.db_ = SqliteManager("data.db")                 # 数据库管理器
+        self.srcDir_ = srcDir  # 比对文件目录
+        self.outDir_ = outDir  # 输出目录
+        self.db_ = SqliteManager("data.db")  # 数据库管理器
 
     def __del__(self):
         pass
 
     def start(self):
         logger.info("开始比对文件, 比对目录:{}", self.srcDir_)
+        # 查找所有文件
+        listFiles = []
+        self.traverseDir(self.srcDir_, listFiles)
+        if len(listFiles) == 0:
+            logger.error("{}, 目录中没有文件", self.srcDir_)
+            return
 
+        for file in listFiles:
+            try:
+                # 读取文件内容
+                compareFile = CompareFile(file)
+                # 处理文件内容
+                self.handleData(compareFile)
 
+            except Exception as e:
+                logger.error("处理文件错误:{}, 错误内容:{}", file, str(e))
+
+    def traverseDir(self, targetDir, listFiles):
+        for p in os.listdir(targetDir):
+            fullPath = os.path.join(targetDir, p)
+            if os.path.isdir(fullPath):
+                self.traverseDir(fullPath, listFiles)
+            else:
+                fileName, extName = os.path.splitext(p)
+                if not fileName.startswith("~$") and extName == ".xlsx":
+                    listFiles.append(fullPath)
+
+    def handleData(self, compareFile):
+        for sheet in compareFile.sheets_:
+            name = sheet.sheetName_
+            listHeader = sheet.sheetHeader_
+            listData = sheet.sheetData_
+
+            logger.info("处理数据, sheet:{}", name)
+
+            # 创建新的字段类型
+            dictFieldInfo = self.createField(listHeader)
+            if len(dictFieldInfo) == 0:
+                logger.error("没有可用的字段, 程序退出")
+                sys.exit(0)
+
+            # 处理数据
+            for data in listData:
+                # 检测该数据是否有必要属性
+                if not self.checkDataValid(data):
+                    continue
+
+                # 替换模糊匹配字段
+                data = self.replaceField(data)
+
+                # 保存数据
+                self.saveData2Db(data)
+
+    def saveData2Db(self, data):
+        field = configRule["Field"]
+        certainty = configRule["Certainty"]
+        setUnCertainty = configRule["UnCertainty"]
+        unCertaintyCount = configRule["UnCertaintyCount"]
+
+        # 判断是否有确定性的字段, 根据该字段做不同的去重处理
+        if certainty in data.keys():
+            listResult = self.searchCertaintyDataExists(field, certainty, data)
+            if len(listResult) > 0:
+                # 数据已经存在, 判断确定性字段是否相同
+                print("数据已经存在, 判断确定性字段是否相同")
+                pass
+            else:
+                # 插入新的数据
+                print("插入新的数据")
+                pass
+        else:
+            print("没有确定性字段")
+
+    def searchCertaintyDataExists(self, field, certainty, data):
+        tblName = "UserInfo"
+        userName = data[field]
+        userId = data[certainty]
+        return self.db_.select(tblName, ["userName"], "userName='{}' and userId='{}'".format(userName, userId))
+
+    @staticmethod
+    def replaceField(data):
+        newDict = {}
+        for k, v in data.items():
+            replaceValue = ""
+            for rk, rv in configFuzzyMatching.items():
+                if rk in k:
+                    replaceValue = rv
+                    break
+            if replaceValue != "" and k != replaceValue:
+                # 需要替换
+                logger.info("数据:{}需要替换字段, 替换属性:{}, 替换为:{}", data, k, replaceValue)
+                newDict[replaceValue] = v
+            else:
+                newDict[k] = v
+        return newDict
+
+    @staticmethod
+    def checkDataValid(data):
+        field = configRule["Field"]
+        keys = data.keys()
+        if field not in keys:
+            # 数据无效
+            logger.warning("无效的数据:{}, 缺少必要字段:{}", data, field)
+            return False
+
+        return True
+
+    def searchField(self, field):
+        tblName = "FieldInfo"
+        listResult = self.db_.select(tblName, ["id", "fieldName"], "fieldName='{}'".format(field))
+        if len(listResult) == 0:
+            return None, None
+        else:
+            return listResult[0]["id"], listResult[0]["fieldName"]
+
+    def createField(self, listHeader):
+        logger.info("字段属性:{}", listHeader)
+        # 查找FieldInfo表, 判断是否有相同字段
+
+        dictFieldInfo = {}
+
+        for field in listHeader:
+            fieldId, fieldName = self.searchField(field)
+            if fieldId is None and fieldName is None:
+                # 该字段不存在, 新建字段, 并记录id
+                logger.info("创建新的字段类型:{}", field)
+                sql = configDictSql["insertFieldInfo"].format(field)
+                if not self.db_.execute(sql):
+                    logger.error("创建字段错误, 程序退出")
+                    sys.exit(0)
+                # 再次查询
+                fieldId, fieldName = self.searchField(field)
+                if fieldId is None and fieldName is None:
+                    logger.error("查询字段id错误:{}, 程序退出", field)
+                    sys.exit(0)
+            dictFieldInfo[fieldName] = fieldId
+        return dictFieldInfo
 # class Logic:
 #     def __init__(self, inputDir, outputDir):
 #         self.inputDir_ = inputDir
