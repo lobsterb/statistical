@@ -53,7 +53,10 @@ class XlsxReader:
             dictRecord = {}
             for col in range(1, self.sheetMaxCols_ + 1):
                 value = str(self.ws_.cell(row=row, column=col).value).strip()
-                dictRecord[self.openSheetHeader_[col - 1]] = value
+                if value == "None":
+                    n = 0
+                if value != "" and value != "None":
+                    dictRecord[self.openSheetHeader_[col - 1]] = value
             dictRecord["数据来源"] = "文件:{}, sheet:{}, 行数:{}".format(self.path_, self.openSheetName_, self.sheetCurRow_)
             listRecord.append(dictRecord)
             self.sheetCurRow_ += 1

@@ -2,6 +2,8 @@
 
 import os
 import sys
+import json
+import re
 
 from loguru import logger
 from util.SqliteManager import SqliteManager
@@ -17,6 +19,7 @@ class Logic:
         self.srcDir_ = srcDir  # 比对文件目录
         self.outDir_ = outDir  # 输出目录
         self.db_ = SqliteManager("data.db")  # 数据库管理器
+        self.dictField_ = {}
 
     def __del__(self):
         pass
@@ -33,12 +36,25 @@ class Logic:
         for file in listFiles:
             try:
                 # 读取文件内容
-                compareFile = CompareFile(file)
-                # 处理文件内容
-                self.handleData(compareFile)
+                compareFile = CompareFile(file, self.checkHandleFile)
+
+                # 判断文件是否处理过
+                if not compareFile.isHandle_:
+                    # 处理文件内容
+                    self.handleData(compareFile)
 
             except Exception as e:
                 logger.error("处理文件错误:{}, 错误内容:{}", file, str(e))
+
+    def checkHandleFile(self, filePath, md5):
+        listResult = self.db_.select("CompareHistory", ["md5"],
+                                     "md5='{}'".format(md5))
+        if len(listResult) > 0:
+            logger.warning("文件:{}, 数据已经处理过, 跳过该文件", filePath)
+            return True
+
+        return False
+
 
     def traverseDir(self, targetDir, listFiles):
         for p in os.listdir(targetDir):
@@ -56,16 +72,18 @@ class Logic:
             listHeader = sheet.sheetHeader_
             listData = sheet.sheetData_
 
-            logger.info("处理数据, sheet:{}", name)
+            logger.info("处理sheet:{}", name)
 
             # 创建新的字段类型
-            dictFieldInfo = self.createField(listHeader)
-            if len(dictFieldInfo) == 0:
+            self.createField(listHeader)
+            if len(self.dictField_) == 0:
                 logger.error("没有可用的字段, 程序退出")
                 sys.exit(0)
 
             # 处理数据
             for data in listData:
+                logger.info("处理数据:{}", data)
+
                 # 检测该数据是否有必要属性
                 if not self.checkDataValid(data):
                     continue
@@ -76,31 +94,218 @@ class Logic:
                 # 保存数据
                 self.saveData2Db(data)
 
+            # 单文件处理完成, 记录文件md5
+            # self.saveHandleFile(compareFile)
+
+    def saveHandleFile(self, compareFile):
+        filePath = compareFile.filePath_
+        md5 = compareFile.md5_
+        sql = "insert into 'CompareHistory'(fileName, md5) VALUES('{}', '{}')".format(filePath, md5)
+        if not self.db_.execute(sql):
+            logger.warning("记录处理文件错误:{}, md5:{}", filePath, md5)
+
+
+    @staticmethod
+    def checkIdCard(idCard):
+
+        Errors = ['验证通过!', '身份证号码位数不对!', '身份证号码出生日期超出范围或含有非法字符!', '身份证号码校验错误!', '身份证地区非法!']
+        area = {"11": "北京", "12": "天津", "13": "河北", "14": "山西", "15": "内蒙古", "21": "辽宁", "22": "吉林", "23": "黑龙江",
+                "31": "上海", "32": "江苏", "33": "浙江", "34": "安徽", "35": "福建", "36": "江西", "37": "山东", "41": "河南",
+                "42": "湖北", "43": "湖南", "44": "广东", "45": "广西", "46": "海南", "50": "重庆", "51": "四川", "52": "贵州",
+                "53": "云南", "54": "西藏", "61": "陕西", "62": "甘肃", "63": "青海", "64": "宁夏", "65": "新疆", "71": "台湾",
+                "81": "香港", "82": "澳门", "91": "国外"}
+        idCard = str(idCard)
+        idCard = idCard.strip()
+        listIdCard = list(idCard)
+
+        # 地区校验
+        f = idCard[0:2]
+        if f not in area.keys():
+        #if not area[f]:
+            return Errors[4]
+        # 15位身份号码检测
+        if len(idCard) == 15:
+            if ((int(idCard[6:8]) + 1900) % 4 == 0 or (
+                    (int(idCard[6:8]) + 1900) % 100 == 0 and (int(idCard[6:8]) + 1900) % 4 == 0)):
+                erg = re.compile(
+                    '[1-9][0-9]{5}[0-9]{2}((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|[1-2][0-9]))[0-9]{3}$')  # //测试出生日期的合法性
+            else:
+                ereg = re.compile(
+                    '[1-9][0-9]{5}[0-9]{2}((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|1[0-9]|2[0-8]))[0-9]{3}$')  # //测试出生日期的合法性
+            if (re.match(ereg, idCard)):
+                return Errors[0]
+            else:
+                return Errors[2]
+        # 18位身份号码检测
+        elif (len(idCard) == 18):
+            # 出生日期的合法性检查
+            # 闰年月日:((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|[1-2][0-9]))
+            # 平年月日:((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|1[0-9]|2[0-8]))
+            if (int(idCard[6:10]) % 4 == 0 or (int(idCard[6:10]) % 100 == 0 and int(idCard[6:10]) % 4 == 0)):
+                ereg = re.compile(
+                    '[1-9][0-9]{5}(19[0-9]{2}|20[0-9]{2})((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|[1-2][0-9]))[0-9]{3}[0-9Xx]$')  # //闰年出生日期的合法性正则表达式
+            else:
+                ereg = re.compile(
+                    '[1-9][0-9]{5}(19[0-9]{2}|20[0-9]{2})((01|03|05|07|08|10|12)(0[1-9]|[1-2][0-9]|3[0-1])|(04|06|09|11)(0[1-9]|[1-2][0-9]|30)|02(0[1-9]|1[0-9]|2[0-8]))[0-9]{3}[0-9Xx]$')  # //平年出生日期的合法性正则表达式
+            # //测试出生日期的合法性
+            if (re.match(ereg, idCard)):
+                # //计算校验位
+                S = (int(listIdCard[0]) + int(listIdCard[10])) * 7 + (
+                            int(listIdCard[1]) + int(listIdCard[11])) * 9 + (
+                                int(listIdCard[2]) + int(listIdCard[12])) * 10 + (
+                                int(listIdCard[3]) + int(listIdCard[13])) * 5 + (
+                                int(listIdCard[4]) + int(listIdCard[14])) * 8 + (
+                                int(listIdCard[5]) + int(listIdCard[15])) * 4 + (
+                                int(listIdCard[6]) + int(listIdCard[16])) * 2 + int(listIdCard[7]) * 1 + int(
+                    listIdCard[8]) * 6 + int(listIdCard[9]) * 3
+                Y = S % 11
+                M = "F"
+                JYM = "10X98765432"
+                M = JYM[Y]  # 判断校验位
+                if (M == listIdCard[17]):  # 检测ID的校验位
+                    return Errors[0]
+                else:
+                    return Errors[3]
+            else:
+                return Errors[2]
+        else:
+            return Errors[1]
+
+    def checkCertaintyVaild(self, data, mode=1):
+        if data is None:
+            return False
+
+        if mode == 1:
+            ret = self.checkIdCard(data)
+            if ret == "验证通过!":
+                return True
+            else:
+                logger.warning("{}:{}", ret, data)
+        return False
+
     def saveData2Db(self, data):
         field = configRule["Field"]
         certainty = configRule["Certainty"]
-        setUnCertainty = configRule["UnCertainty"]
-        unCertaintyCount = configRule["UnCertaintyCount"]
 
         # 判断是否有确定性的字段, 根据该字段做不同的去重处理
         if certainty in data.keys():
-            listResult = self.searchCertaintyDataExists(field, certainty, data)
-            if len(listResult) > 0:
-                # 数据已经存在, 判断确定性字段是否相同
-                print("数据已经存在, 判断确定性字段是否相同")
-                pass
+
+            if self.checkCertaintyVaild(data[certainty]):
+                listResult = self.searchCertaintyDataExists(field, certainty, data)
+                if len(listResult) > 0:
+                    # 数据已经存在, 判断确定性字段是否相同
+                    self.appendData(certainty, data)
+                else:
+                    # 插入新的数据
+                    self.insertData(field, data, certainty)
             else:
-                # 插入新的数据
-                print("插入新的数据")
-                pass
+                logger.warning("处理无效:<{}>的数据,{}", certainty, data)
+                self.handleUncertaintyData(field, data)
         else:
-            print("没有确定性字段")
+            logger.warning("处理没有:<{}>的数据,{}", certainty, data)
+            self.handleUncertaintyData(field, data)
+
+    def checkUnCertaintyDataExists(self, field, data):
+        tblName = "UserInfo"
+        userName = data[field]
+        if userName is None or userName == "" or userName == "None":
+            return []
+        return self.db_.select(tblName, ["id","userName","userId","content","fieldDesc"], "userName='{}'".format(userName))
+
+    def handleUncertaintyData(self, field, data):
+
+        listResult = self.checkUnCertaintyDataExists(field, data)
+        if len(listResult) > 0:
+            # 判断数据是否存在
+            self.compareData(data, listResult)
+        else:
+            # 插入一条数据
+            self.insertData(field, data)
+
+    def compareData(self, data, listResult):
+        setUnCertainty = configRule["UnCertainty"]
+        unCertaintyCount = configRule["UnCertaintyCount"]
+
+        for userInfo in listResult:
+            print(userInfo)
+
+    # 完善数据, 补齐数据
+    def appendData(self, certainty, data):
+        userId = data[certainty]
+        newFieldDesc = self.getFieldDesc(data)
+        newFieldDesc = [str(x) for x in newFieldDesc]
+        newFieldDesc.sort()
+        newContent = data
+
+        # 查询已经存在的记录
+        listResult = self.db_.select("UserInfo", ["userName", "userId", "content", "fieldDesc"], "userId='{}'".format(userId))
+        oldContent = None
+        oldFieldDesc = None
+
+        if len(listResult) <= 0:
+            return
+
+        for userInfo in listResult:
+            oldContent = json.loads(userInfo["content"])
+            oldFieldDesc = userInfo["fieldDesc"].split("#")
+
+        if oldFieldDesc != newFieldDesc:
+            # 取并集, 更新数据
+            content = json.dumps(newContent | oldContent, ensure_ascii=False)
+            listFieldDesc = list(set(newFieldDesc).union(set(oldFieldDesc)))
+            listFieldDesc.sort()
+            strField = [str(x) for x in listFieldDesc]
+            fieldDesc = "#".join(strField)
+
+            sql = "update 'UserInfo' set content='{}', fieldDesc='{}' where userId='{}'".format(content, fieldDesc, userId)
+            if not self.db_.execute(sql):
+                logger.warning("更新数据失败,{}", data)
+
+    def getFieldDesc(self, data):
+        listFieldDesc = []
+        # 删除不存在的字段
+        listDelKey = []
+        for k, v in data.items():
+            if k in self.dictField_:
+                if v is not None:
+                    if not (v.strip() == "" or v.strip() == "None"):
+                        listFieldDesc.append(self.dictField_[k])
+                else:
+                    listDelKey.append(k)
+        listFieldDesc.sort()
+
+        for key in listDelKey:
+            del data[key]
+
+        return listFieldDesc
+
+    # 插入一条数据
+    def insertData(self, field, data, certainty = None):
+
+        listFieldDesc = self.getFieldDesc(data)
+
+        name = data[field]
+        if certainty is None:
+            id = ""
+        else:
+            id = data[certainty]
+        content = json.dumps(data, ensure_ascii=False)
+        strField = [str(x) for x in listFieldDesc]
+        fieldDesc = "#".join(strField)
+
+        sql = "insert into 'UserInfo'(userName, userId, content, fieldDesc) VALUES('{}', '{}', '{}', '{}')".format(name,
+                                                                                                                   id,
+                                                                                                                   content,
+                                                                                                                   fieldDesc)
+        if not self.db_.execute(sql):
+            logger.warning("插入数据错误, {}", data)
 
     def searchCertaintyDataExists(self, field, certainty, data):
         tblName = "UserInfo"
-        userName = data[field]
         userId = data[certainty]
-        return self.db_.select(tblName, ["userName"], "userName='{}' and userId='{}'".format(userName, userId))
+        if userId is None or userId == "" or userId == "None":
+            return []
+        return self.db_.select(tblName, ["userName"], "userId='{}'".format(userId))
 
     @staticmethod
     def replaceField(data):
@@ -113,7 +318,7 @@ class Logic:
                     break
             if replaceValue != "" and k != replaceValue:
                 # 需要替换
-                logger.info("数据:{}需要替换字段, 替换属性:{}, 替换为:{}", data, k, replaceValue)
+                logger.info("属性替换:替换属性:{}, 替换为:{}", k, replaceValue)
                 newDict[replaceValue] = v
             else:
                 newDict[k] = v
@@ -126,6 +331,11 @@ class Logic:
         if field not in keys:
             # 数据无效
             logger.warning("无效的数据:{}, 缺少必要字段:{}", data, field)
+            return False
+
+        if data[field] == "None" or data[field] == "":
+            # 数据无效
+            logger.warning("无效的数据:{}", data)
             return False
 
         return True
@@ -142,9 +352,10 @@ class Logic:
         logger.info("字段属性:{}", listHeader)
         # 查找FieldInfo表, 判断是否有相同字段
 
-        dictFieldInfo = {}
-
         for field in listHeader:
+            if field is None or field == "" or field == "None":
+                continue
+
             fieldId, fieldName = self.searchField(field)
             if fieldId is None and fieldName is None:
                 # 该字段不存在, 新建字段, 并记录id
@@ -158,8 +369,8 @@ class Logic:
                 if fieldId is None and fieldName is None:
                     logger.error("查询字段id错误:{}, 程序退出", field)
                     sys.exit(0)
-            dictFieldInfo[fieldName] = fieldId
-        return dictFieldInfo
+            self.dictField_[fieldName] = fieldId
+
 # class Logic:
 #     def __init__(self, inputDir, outputDir):
 #         self.inputDir_ = inputDir

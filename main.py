@@ -85,4 +85,4 @@ if __name__ == '__main__':
 
     logic = Logic(srcDir, outDir)
     logic.start()
-    os.system("pause")
+    # os.system("pause")

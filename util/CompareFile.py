@@ -12,12 +12,14 @@ class CompareFile:
             self.sheetHeader_ = sheetHeader
             self.sheetData_ = sheetData
 
-    def __init__(self, filePath):
+    def __init__(self, filePath, checkHandleFile):
         self.filePath_ = filePath
         self.md5_ = self.getFileMd5()
-        logger.info("文件:{},MD5:{}", self.filePath_, self.md5_)
-        self.reader_ = XlsxReader(filePath)
-        self.sheets_ = self.readAllData()
+        logger.info("开始处理文件:{},MD5:{}", self.filePath_, self.md5_)
+        self.isHandle_ = checkHandleFile(self.filePath_, self.md5_)
+        if not self.isHandle_:
+            self.reader_ = XlsxReader(filePath)
+            self.sheets_ = self.readAllData()
 
     # 获取文件md5
     def getFileMd5(self):
